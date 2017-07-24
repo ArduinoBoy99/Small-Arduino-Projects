@@ -1,0 +1,102 @@
+#include "NAxisMotion.h"        //Contains the bridge code between the API and the Arduino Environment
+#include <Wire.h>
+#include <SoftwareSerial.h>
+
+SoftwareSerial BT(5, 6); 
+// creates a "virtual" serial port/UART
+// connect BT module TX to D5
+// connect BT module RX to D6
+// connect BT Vcc to 5V, GND to GND
+
+const int piezo = A0;
+const int msec = 5000;
+const int LED_13 = 13;
+const int knock_limit = 50;
+const int accel_limit = -1;
+NAxisMotion mySensor;                 //Object that for the sensor
+unsigned long lastStreamTime = 0;     //To store the last streamed time stamp
+const int streamPeriod = 100;          //To stream at 10Hz without using additional timers (time period(ms) =1000/frequency(Hz)))
+bool updateSensorData = true;
+
+void setup() {
+  Serial.begin(9600);
+  
+  // set digital pin to control as an output
+  pinMode(13, OUTPUT);
+  // set the data rate for the SoftwareSerial port
+  BT.begin(9600);
+  // Send test message to other device
+  BT.println("Hello from Arduino");
+  BT.println("Send '1' to turn sensor update on");
+  BT.println("Send '2' to turn sensor update off");
+
+  //Peripheral Initialization
+  I2C.begin();                    //Initialize I2C communication to the let the library communicate with the sensor. 
+  //Sensor Initialization
+  mySensor.initSensor();          //The I2C Address can be changed here inside this function in the library
+  mySensor.setOperationMode(OPERATION_MODE_NDOF);   //Can be configured to other operation modes as desired
+  mySensor.setUpdateMode(MANUAL);  //The default is AUTO. Changing to manual requires calling the relevant update functions prior to calling the read functions
+  //Setting to MANUAL requires lesser reads to the sensor
+  mySensor.updateAccelConfig();
+  updateSensorData = true;
+  Serial.println();
+  Serial.println("Default accelerometer configuration settings...");
+  Serial.print("Range: ");
+  Serial.println(mySensor.readAccelRange());
+  Serial.print("Bandwidth: ");
+  Serial.println(mySensor.readAccelBandwidth());
+  Serial.print("Power Mode: ");
+  Serial.println(mySensor.readAccelPowerMode());
+  Serial.println("Streaming in ..."); //Countdown
+  Serial.print("3...");
+  delay(1000);  //Wait for a second
+  Serial.print("2...");
+  delay(1000);  //Wait for a second
+  Serial.println("1...");
+  delay(1000);  //Wait for a second
+}
+char a; // stores incoming character from other device
+
+void loop() {
+  int knockVal = analogRead(piezo);
+  if (updateSensorData)  //Keep the updating of data as a separate task{
+    mySensor.updateAccel();        //Update the Accelerometer data
+    delay(10);
+  }
+  if (((millis() - lastStreamTime) >= streamPeriod) && updateSensorData){
+    lastStreamTime= millis();
+    if (mySensor.readAccelZ() < accel_limit){
+      Serial.print("Ubrzanje:");
+      Serial.print(mySensor.readAccelZ());
+      Serial.print(" vibracija: ");
+      Serial.println(knockVal);
+      Serial.println("Detektiran je pad, ako se ne pomaknete za 5 sekundi aktivirati ce se SOS");
+      BT.println("Detektiran je pad, ako se ne pomaknete za 5 sekundi aktivirati ce se SOS");
+      delay(msec);
+    }
+    Serial.print("Ubrzanje:");
+    Serial.print(mySensor.readAccelZ());
+    Serial.print(" vibracija: ");
+    Serial.println(knockVal);
+  }
+  
+  if (BT.available()){
+    a=(BT.read());
+    if (a=='1'){
+      digitalWrite(LED_13, HIGH);
+      BT.println("Accel Sensor update turned on.");
+      updateSensorData = true;
+      Serial.println("Sensor update turned on, continuing..");
+    }
+    if (a=='2'){
+      digitalWrite(LED_13, LOW);
+      BT.println("Acell Sensor update turned off");
+      updateSensorData = false;
+      Serial.println("Sensor update turned off, stopping..");
+    }
+    if (a=='?'){
+      BT.println("Send '1' to turn sensor update on");
+      BT.println("Send '2' to turn sensor update off");
+    }   
+  }
+}
