@@ -1,0 +1,235 @@
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Ethernet.h>
+#include "NAxisMotion.h"   //Bridge code between the API and the Arduino Environment
+#include <Wire.h>
+
+//NFC reader
+#define RST_PIN 8 // Configurable
+#define SS_PIN 9 // Configurable
+MFRC522 mfrc522(SS_PIN, RST_PIN);   // Create MFRC522 instance
+const String NFC_separator = " ";
+unsigned long nfcStreamTime = millis();
+
+//FallDetection
+int msec = 6000;
+NAxisMotion mySensor;                 //Object that for the sensor
+unsigned long fallDetectionStreamTime = 0;     //To store the last streamed time stamp
+unsigned long fallStreamTime = millis();
+const int streamPeriod = 50;          //To stream at 25Hz without using additional timers (time period(ms) =1000/frequency(Hz))
+bool updateSensorData = true;         //
+
+//Ethernet
+byte mac[] = { 0xDE, 0xA1, 0xB2, 0xE3, 0xF4, 0xE5 };
+// Set the static IP address to use if the DHCP fails to assign
+byte ip[] = {192,168,0,108};
+byte ds[] = {192,168,0,1};
+EthernetClient client;
+
+//GPS
+static const int RXPin = 7, TXPin = 6;
+static const uint32_t GPSBaud = 9600;
+const String gps_separator = ",";
+unsigned long gpsStreamTime = millis();
+// The TinyGPS++ object
+TinyGPSPlus gps;
+// The serial connection to the GPS device
+SoftwareSerial ss(RXPin, TXPin);
+
+void setup(){
+  Serial.begin(115200);
+  ss.begin(GPSBaud);
+  Serial.println(F("Started software serial and GPS..."));
+  delay(100);
+
+   // Init SPI bus
+  SPI.begin();
+  Serial.println(F("Started SPI communication to NFC reader.."));
+   // Init MFRC522 card
+  mfrc522.PCD_Init();
+  //shows in serial that it is ready to read
+  Serial.println(F("NFC Card reader is now activated."));
+  delay(100);
+  
+  //Peripheral Initialization
+  I2C.begin();                    //Initialize I2C communication to the let the library communicate with the sensor. 
+  //Sensor Initialization
+  mySensor.initSensor();          //The I2C Address can be changed here inside this function in the library
+  mySensor.setOperationMode(OPERATION_MODE_NDOF);   //Can be configured to other operation modes as desired
+  mySensor.setUpdateMode(MANUAL);  //The default is AUTO. Changing to manual requires calling the relevant update functions prior to calling the read functions
+  //Setting to MANUAL requires lesser reads to the sensor
+  mySensor.updateAccelConfig();
+  updateSensorData = true;
+  Serial.println("Started I2C communication to accelerometer...");
+  delay(100);
+
+  // start the Ethernet connection:
+  Ethernet.begin(mac,ip,ds);
+  Serial.println(F("Configured Ethernet using IP."));
+  Serial.print(F("Ethernet LAN address: "));
+  Serial.println(Ethernet.localIP());
+  // give the Ethernet shield time to initialize:
+  Serial.print(F("Initializing in...5"));
+  for (int i = 4; i >= 1; i--){
+    delay(1000);
+    Serial.print("..");
+    Serial.print(i);
+  }
+  Serial.println("");
+}
+
+void loop(){
+  // This sketch displays information every time a new sentence is correctly encoded.
+  while (ss.available() > 0){
+    if (gps.encode(ss.read()) && (millis() - gpsStreamTime > 10000)){
+      if (gps.location.isValid()){
+        displayInfo();
+        String latitude = String(gps.location.lat(), 6);
+        String longitude = String(gps.location.lng(), 6);
+        String gps_cord = latitude + gps_separator + longitude;
+        gps_send_data(gps_cord);
+        gpsStreamTime = millis();
+        }
+    }
+  }
+
+  // Prepare key - all keys are set to FFFFFFFFFFFFh at chip delivery from the factory.
+  MFRC522::MIFARE_Key key;
+  for (byte i = 0; i < 6; i++) key.keyByte[i] = 0xFF;
+  //some variables we need
+  byte block;
+  byte len;
+  MFRC522::StatusCode status;
+  
+  // Look for new cards
+  if (mfrc522.PICC_IsNewCardPresent() && (mfrc522.PICC_ReadCardSerial())) {
+    if (millis() - nfcStreamTime > 5000) {
+      nfcStreamTime = millis();
+      Serial.println(F("**Card Detected:**"));
+      mfrc522.PICC_DumpDetailsToSerial(&(mfrc522.uid)); //dump some details about the card
+      //mfrc522.PICC_DumpToSerial(&(mfrc522.uid));      //uncomment this to see all blocks in hex
+      Serial.println(F("Name: "));
+      
+      byte buffer1[18];
+      block = 4;
+      len = 18;
+    
+      //GET FIRST NAME
+      status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, 4, &key, &(mfrc522.uid)); //line 834 of MFRC522.cpp file
+      if (status != MFRC522::STATUS_OK) {
+        Serial.print(F("Authentication failed: "));
+        Serial.println(mfrc522.GetStatusCodeName(status));
+        return;
+      }
+      status = mfrc522.MIFARE_Read(block, buffer1, &len);
+      if (status != MFRC522::STATUS_OK) {
+        Serial.print(F("Reading failed: "));
+        Serial.println(mfrc522.GetStatusCodeName(status));
+        return;
+      }
+    
+      //PRINT FIRST NAME
+      for (uint8_t i = 0; i < 16; i++){
+        if (buffer1[i] != 32){
+          Serial.write(buffer1[i]);
+        }
+      }
+      //TRANSFORM TO STRING
+      buffer1[16] = '\0';
+      String NFC1 = (char*)buffer1;
+  
+      Serial.print(" ");
+      //GET LAST NAME
+      byte buffer2[18];
+      block = 1;
+    
+      status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, 1, &key, &(mfrc522.uid)); //line 834
+      if (status != MFRC522::STATUS_OK) {
+        Serial.print(F("Authentication failed: "));
+        Serial.println(mfrc522.GetStatusCodeName(status));
+        return;
+      }
+      status = mfrc522.MIFARE_Read(block, buffer2, &len);
+      if (status != MFRC522::STATUS_OK) {
+        Serial.print(F("Reading failed: "));
+        Serial.println(mfrc522.GetStatusCodeName(status));
+        return;
+      }
+      //PRINT LAST NAME
+      for (uint8_t i = 0; i < 16; i++) {
+        Serial.write(buffer2[i] );
+      }
+      Serial.println();
+      //TRANSFORM TO STRING
+      buffer2[16] = '\0';
+      String NFC2 = (char*)buffer2;
+      // STOP READING PROCESS
+      mfrc522.PICC_HaltA();
+      mfrc522.PCD_StopCrypto1();
+      
+      //SEND DATA OVER ETHERNET
+      String NFC_data = NFC1 + NFC_separator + NFC2;
+      //Serial.print(F("NFC1: "));
+      //Serial.println(NFC1);
+      //Serial.print(F("NFC2: "));
+      //Serial.println(NFC2);
+      nfc_send_data(NFC_data);   
+      }
+  }
+
+  if (updateSensorData){  //Keep the updating of data as a separate task
+    mySensor.updateLinearAccel();        //Update the Accelerometer data
+    updateSensorData = false;
+  }
+  if ((millis() - fallDetectionStreamTime) >= streamPeriod){
+    fallDetectionStreamTime= millis();
+    updateSensorData = true;
+    if ((mySensor.readLinearAccelZ() > 7) && (millis() - fallStreamTime > 3000)){
+      fallStreamTime = millis();
+      health_send_data("Detektiran pad");
+      Serial.println(F("Detektiran pad"));
+    }
+  }
+}
+
+void gps_send_data(String data){
+  Serial.println(F("Sending GPS data to server.."));
+  IPAddress server(192,168,0,103);
+  if (client.connect(server, 55555)){
+    client.print(data);
+    client.stop();
+    }
+}
+
+void health_send_data(String data){
+  Serial.println(F("Sending fall detection data to server.."));
+  IPAddress server(192,168,0,104);
+  if (client.connect(server, 44444)){
+    client.print(data);
+    client.stop();
+    }
+} 
+
+void nfc_send_data(String data){
+  Serial.print(F("Sending NFC data to server"));
+  IPAddress server(192,168,0,101);
+  if( client.connect(server, 33333)){;
+  client.print(data);
+  client.stop();
+  }
+}
+
+void displayInfo(){
+  Serial.print(F("Location: ")); 
+  if (gps.location.isValid()){
+    Serial.print(gps.location.lat(), 6);
+    Serial.print(F(","));
+    Serial.print(gps.location.lng(), 6);
+  }
+  else{
+    Serial.print(F("INVALID"));
+  }
+  Serial.println();
+}
