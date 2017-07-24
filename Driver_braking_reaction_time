@@ -1,0 +1,101 @@
+/* Mjerenje reakcije kocenja vozaca
+ *  Ovaj program razvijen je za potrebe istrazivanja Zavoda za prometno-tehnicka vjestacenja 
+ *  u suradnji sa Zavodom za Informacijsko-komunikacijski promet na Fakultetu prometnih znanosti.
+ *  
+ *  Arduino na kojemu se nalazi ovaj program biljezi vrijeme pritiska kocnice u vozilu. 
+ *  Vrijeme je u formatu godina-mjesec-dan sat-minuta-sekunda.milisekunda. 
+ *  Autor programa univ. bacc. ing. traff. Luka Brletic.
+*/
+
+#include <DS3232RTC.h>    //http://github.com/JChristensen/DS3232RTC
+#include <TimeLib.h>         //http://www.arduino.cc/playground/Code/Time  
+#include <Wire.h>         //http://arduino.cc/en/Reference/Wire (included with Arduino IDE)
+
+const int koc = 8;
+int val1;
+int limit_k = 0;
+int count_k;
+int zero;
+int one;
+unsigned long ms0;
+unsigned long ms1;
+unsigned long ms;
+
+void setup() {
+  Serial.begin(4800);
+  pinMode(koc, INPUT);
+  setSyncProvider(RTC.get);   // the function to get the time from the RTC
+    if(timeStatus() != timeSet) 
+        Serial.println("Unable to sync with the RTC");
+    else
+        Serial.println("RTC has set the system time");
+}
+
+void loop() {
+  zero = second();
+  delay(31);
+  one = second();
+  if (one != zero){
+      ms0 = millis();
+    }
+    
+  val1 = digitalRead(koc);
+  if (val1 == HIGH){
+    if (limit_k < 1){
+      ms1 = millis();
+      ms = ms1 - ms0;
+      if (ms > 1000){
+        ms = ms % 1000;
+      }
+      count_k = ispis_serial(count_k,ms);
+      limit_k = 1;
+      delay(35);
+    }
+  }
+  if (val1 == LOW){
+    limit_k = 0;
+    delay(7);
+  }
+}
+
+void digital_clock_display(unsigned long m){
+  // digital clock display of the time
+  Serial.print(year());
+  Serial.print("-");
+  Serial.print(month());
+  Serial.print("-");
+  Serial.print(day());
+  Serial.print(" ");
+  Serial.print(hour());
+  print_digits(minute());
+  print_digits(second());
+  Serial.print(".");
+  if (m < 100){
+    if (m < 10){
+      Serial.print("0");
+    }
+    Serial.print("0");
+    Serial.println(m); 
+  }
+  else {
+    Serial.println(m);
+  }
+}
+
+void print_digits(int digits)
+{
+  // utility function for digital clock display: prints preceding colon and leading 0
+  Serial.print(":");
+  if(digits < 10)
+    Serial.print('0');
+  Serial.print(digits);
+}
+
+int ispis_serial(int c, unsigned long msek){
+  Serial.print(c);
+  Serial.print("n ");
+  Serial.print("Tkoc: ");
+  digital_clock_display(msek);
+  c = c + 1;
+  return c;
+}
